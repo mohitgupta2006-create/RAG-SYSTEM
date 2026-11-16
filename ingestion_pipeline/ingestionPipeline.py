@@ -1,9 +1,6 @@
 """Extract page-aware PDF text and build a document's vector knowledge base."""
 
-import json
-import os
 from collections import defaultdict
-from pathlib import Path
 
 import faiss
 import numpy as np
@@ -52,11 +49,11 @@ def parse_pdf(pdf_path: str, max_pages: int = 500) -> list[dict]:
         raise DocumentError() from exc
 
 
-def run_ingestion_pipeline(pdf_path: str, doc_hash: str, embedding_model, cache_dir: str,
-                           source_name: str | None = None, max_pages: int = 500):
+def run_ingestion_pipeline(pdf_path: str, embedding_model, source_name: str = "document.pdf",
+                           max_pages: int = 500):
     elements = parse_pdf(pdf_path, max_pages=max_pages)
     token_limit = min(220, embedding_model.max_seq_length - embedding_model.tokenizer.num_special_tokens_to_add(pair=False))
-    chunks = create_chunks(elements, source_name or os.path.basename(pdf_path),
+    chunks = create_chunks(elements, source_name,
                            embedding_model.tokenizer, max_tokens=token_limit,
                            overlap=min(32, max(0, token_limit // 4)))
     if not chunks:
@@ -66,10 +63,9 @@ def run_ingestion_pipeline(pdf_path: str, doc_hash: str, embedding_model, cache_
         embedding_model.encode(texts[i:i + BATCH_SIZE], convert_to_numpy=True)
         for i in range(0, len(texts), BATCH_SIZE)
     ]).astype("float32")
-    index = faiss.IndexFlatL2(embeddings.shape[1])
+    if embeddings.ndim != 2 or not np.isfinite(embeddings).all():
+        raise DocumentError()
+    faiss.normalize_L2(embeddings)
+    index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
-    Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    with open(os.path.join(cache_dir, f"{doc_hash}.json"), "w", encoding="utf-8") as output:
-        json.dump(chunks, output, ensure_ascii=False)
-    faiss.write_index(index, os.path.join(cache_dir, f"{doc_hash}.index"))
     return index, chunks
