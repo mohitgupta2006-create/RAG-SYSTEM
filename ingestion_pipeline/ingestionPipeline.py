@@ -10,6 +10,7 @@ import numpy as np
 import pymupdf as fitz
 
 from rag.errors import DocumentError
+from rag.chunking import create_chunks
 
 HEADER_FOOTER_MARGIN = 0.08
 REPEATING_CONTENT_THRESHOLD = 0.5
@@ -51,20 +52,13 @@ def parse_pdf(pdf_path: str, max_pages: int = 500) -> list[dict]:
         raise DocumentError() from exc
 
 
-def _create_intelligent_chunks(elements: list, suppression_list: set, source_filename: str) -> list:
-    return [
-        {"content": element["content"], "metadata": {
-            "source_document": source_filename, "page_number": element["page_num"],
-            "section_header": "Preamble", "chunk_type": "content",
-        }}
-        for element in elements if element["content"] not in suppression_list
-    ]
-
-
 def run_ingestion_pipeline(pdf_path: str, doc_hash: str, embedding_model, cache_dir: str,
                            source_name: str | None = None, max_pages: int = 500):
     elements = parse_pdf(pdf_path, max_pages=max_pages)
-    chunks = _create_intelligent_chunks(elements, set(), source_name or os.path.basename(pdf_path))
+    token_limit = min(220, embedding_model.max_seq_length - embedding_model.tokenizer.num_special_tokens_to_add(pair=False))
+    chunks = create_chunks(elements, source_name or os.path.basename(pdf_path),
+                           embedding_model.tokenizer, max_tokens=token_limit,
+                           overlap=min(32, max(0, token_limit // 4)))
     if not chunks:
         raise DocumentError()
     texts = [chunk["content"] for chunk in chunks]

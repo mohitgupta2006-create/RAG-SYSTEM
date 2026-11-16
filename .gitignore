@@ -3,6 +3,7 @@
 !.env.example
 .venv/
 .test-deps/
+.test-tmp*/
 .coverage
 htmlcov/
 .DS_Store
