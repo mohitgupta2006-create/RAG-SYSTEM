@@ -1,4 +1,10 @@
 .env
+.env.*
+!.env.example
+.venv/
+.test-deps/
+.coverage
+htmlcov/
 .DS_Store
 venv/
 venv311/
