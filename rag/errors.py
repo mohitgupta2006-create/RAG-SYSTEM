@@ -24,3 +24,8 @@ class GenerationError(RAGError):
 class CacheError(RAGError):
     status_code = 503
     public_message = "The document cache is unavailable. Please retry."
+
+
+class BusyError(RAGError):
+    status_code = 503
+    public_message = "The service is busy. Please retry shortly."

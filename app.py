@@ -1,175 +1,88 @@
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import uvicorn
-import os
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import List, Dict
-from sentence_transformers import SentenceTransformer
-from google import genai
-from google.genai import types
-import hashlib
-import requests
-import faiss
+"""FastAPI entry point. Models and credentials are loaded only during startup."""
 
-from ingestion_pipeline.ingestionPipeline import run_ingestion_pipeline
-from inference_pipeline.inferencePipeline import run_inference_pipeline
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
-app = FastAPI()
-security = HTTPBearer()
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.concurrency import run_in_threadpool
 
-load_dotenv()
+from rag.auth import valid_api_key
+from rag.config import Settings
+from rag.errors import BusyError, RAGError
+from rag.middleware import RequestMiddleware
+from rag.schemas import EndpointRequest, EndpointResponse, HealthResponse
 
-# -- Environment Variables --
-# Load API keys from environment variables
-API_KEY = os.getenv("API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not all([API_KEY, GEMINI_API_KEY]):
-    raise ValueError("Missing API KEY")
-
-CACHE_DIR = "knowledge_base_cache"
-os.makedirs(CACHE_DIR, exist_ok=True)
+logger = logging.getLogger(__name__)
+security = HTTPBearer(auto_error=False)
 
 
-# -- RAG State Class --
-# This class initializes the embedding and generative models used in the RAG pipeline.
-class RAGState:
-    def __init__(self, embedding_model_name="sentence-transformers/all-MiniLM-L6-v2"):
-        self.embedding_model = SentenceTransformer(embedding_model_name)
-        self.genai_client = genai.Client(api_key=GEMINI_API_KEY)
-        self.model_name = "gemini-2.0-flash"
+def create_app(settings: Settings | None = None, service_factory=None) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application):
+        config = settings or Settings.from_env()
+        factory = service_factory
+        if factory is None:
+            from rag.service import RAGService
+            factory = RAGService
+        application.state.settings = config
+        application.state.service = await run_in_threadpool(factory, config)
+        application.state.ready = True
+        try:
+            yield
+        finally:
+            application.state.ready = False
+            await run_in_threadpool(application.state.service.close)
 
-        # Dictionaries to cache loaded knowledge bases in memory
-        self.loaded_indexes: Dict[str, faiss.Index] = {}
-        self.loaded_chunks: Dict[str, List[Dict]] = {}
+    application = FastAPI(title="Insurance Policy RAG API", version="2.0.0", lifespan=lifespan)
+    application.add_middleware(RequestMiddleware)
 
+    @application.exception_handler(RAGError)
+    async def service_error(request, exc):
+        logger.warning("Service request failed (%s)", type(exc).__name__)
+        headers = {"Retry-After": "10"} if isinstance(exc, BusyError) else None
+        return JSONResponse({"detail": exc.public_message}, exc.status_code, headers=headers)
 
-rag_state = RAGState()
+    @application.exception_handler(Exception)
+    async def unexpected_error(request, exc):
+        logger.error("Unexpected service failure (%s)", type(exc).__name__)
+        return JSONResponse({"detail": "An internal server error occurred."}, 500)
 
+    async def verify_api_key(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)):
+        expected = request.app.state.settings.api_key.get_secret_value()
+        if credentials is None or not valid_api_key(credentials.credentials, expected):
+            raise HTTPException(401, "Invalid or missing API key.", headers={"WWW-Authenticate": "Bearer"})
 
-# -- Pydantic Models for Request and Response --
-class HealthResponse(BaseModel):
-    status: str
-    timestamp: str
+    @application.get("/")
+    def root():
+        return {"message": "Insurance Policy RAG API", "docs": "/docs"}
 
+    @application.get("/health", response_model=HealthResponse)
+    async def health():
+        return HealthResponse(status="Healthy", timestamp=datetime.now(timezone.utc).isoformat())
 
-class EndpointRequest(BaseModel):
-    document: str = Field(..., description="URL for the document to be processed")
-    queries: List[str] = Field(..., description="List of user queries")
+    @application.get("/ready")
+    async def ready(request: Request):
+        if not getattr(request.app.state, "ready", False):
+            raise HTTPException(503, "Runtime is not ready.")
+        return {"status": "Ready"}
 
-
-class EndpointResponse(BaseModel):
-    answers: List[str] = Field(..., description="Generated answers to the queries")
-
-
-# --Helper Functions--
-def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.credentials != API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API KEY",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return credentials.credentials
-
-
-def download_pdf(url: str, local_path: str) -> bool:
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        with open(local_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading PDF: {e}")
-        return False
-
-
-def get_file_hash(file_path: str):
-    sha256 = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(8192):
-            sha256.update(chunk)
-    return sha256.hexdigest()
-
-
-# -- API Endpoints --
-@app.get("/")
-def root():
-    return {"message": "Welcome to HackRX Hackathon API"}
-
-
-@app.get("/health", response_model=HealthResponse)
-async def check_health():
-    return HealthResponse(
-        status="Healthy",
-        timestamp=datetime.now().isoformat(),
-    )
-
-
-@app.post(
-    "/hackrx/run",
-    response_model=EndpointResponse,
-    dependencies=[Depends(verify_api_key)],
-)
-async def generate_response(request: EndpointRequest):
-    try:
-        temp_pdf_path = os.path.join(CACHE_DIR, "temp_document.pdf")
-
-        # 1. Download and Hash the document
-        if not download_pdf(request.document, temp_pdf_path):
-            raise HTTPException(
-                status_code=400, detail="Could not download document from URL."
-            )
-
-        doc_hash = get_file_hash(temp_pdf_path)
-        index_path = os.path.join(CACHE_DIR, f"{doc_hash}.index")
-
-        # 2. **CORRECTED LOGIC**: Check cache and run ingestion ONLY IF NEEDED
-        if not os.path.exists(index_path):
-            print(f"Cache miss for document: {request.document}")
-            # Run the full ingestion pipeline for the new document
-            run_ingestion_pipeline(
-                pdf_path=temp_pdf_path,
-                doc_hash=doc_hash,
-                embedding_model=rag_state.embedding_model,
-                cache_dir=CACHE_DIR,
-            )
-        else:
-            print(f"Cache hit for document: {request.document}")
-
-        # 3. Always run the inference pipeline after ensuring the KB exists
-        answers = run_inference_pipeline(
-            queries=request.queries,
-            doc_hash=doc_hash,
-            cache_dir=CACHE_DIR,
-            embedding_model=rag_state.embedding_model,
-            generative_model=rag_state.genai_client,
-            model_name=rag_state.model_name,
-            loaded_indexes=rag_state.loaded_indexes,
-            loaded_chunks=rag_state.loaded_chunks,
-        )
-
-        # 4. Clean up the downloaded PDF
-        if os.path.exists(temp_pdf_path):
-            os.remove(temp_pdf_path)
-
+    @application.post("/api/run", response_model=EndpointResponse, dependencies=[Depends(verify_api_key)])
+    @application.post("/hackrx/run", response_model=EndpointResponse, dependencies=[Depends(verify_api_key)])
+    def generate_response(payload: EndpointRequest, request: Request):
+        # FastAPI runs sync handlers in its worker pool, leaving the event loop responsive.
+        answers = request.app.state.service.answer(str(payload.document), payload.queries)
         return EndpointResponse(answers=answers)
 
-    except HTTPException as e:
-        raise e  # Re-raise known HTTP exceptions
-    except Exception as e:
-        import traceback
+    return application
 
-        traceback.print_exc()  # Print the full traceback to the server console for debugging
-        raise HTTPException(
-            status_code=500, detail=f"An internal server error occurred: {str(e)}"
-        )
+
+app = create_app()
 
 
 if __name__ == "__main__":
-    port = 8000
-    uvicorn.run("app:app", port=port, reload=False)
+    import uvicorn
+    logging.basicConfig(level=logging.INFO)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
