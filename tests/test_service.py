@@ -10,13 +10,25 @@ from rag.service import RAGService
 
 
 def build_service(tmp_path, embedding, monkeypatch):
-    config = Settings(api_key="test-token", gemini_api_key="provider-token", gemini_model="test-model", cache_dir=tmp_path)
+    config = Settings(
+        api_key="test-token",
+        gemini_api_key="provider-token",
+        gemini_model="test-model",
+        cache_dir=tmp_path,
+    )
     client = Mock()
 
     def reply(**kwargs):
         passages = json.loads(kwargs["contents"])["passages"]
-        return Mock(text=json.dumps(dict(answerable=True, answer="The waiting period is 30 days.",
-                                         source_ids=[passages[0]["id"]])))
+        return Mock(
+            text=json.dumps(
+                dict(
+                    answerable=True,
+                    answer="The waiting period is 30 days.",
+                    source_ids=[passages[0]["id"]],
+                )
+            )
+        )
 
     client.models.generate_content.side_effect = reply
     reranker = Mock()
@@ -46,6 +58,7 @@ def test_pdf_to_answer_and_cache_reuse_with_request_filename(tmp_path, embedding
     monkeypatch.setattr("rag.service.download_pdf", lambda url, path, **kw: path.write_bytes(data))
     service.answer("https://example.com/original.pdf", ["Waiting?"])
     from rag.service import run_ingestion_pipeline
+
     build = Mock(wraps=run_ingestion_pipeline)
     monkeypatch.setattr("rag.service.run_ingestion_pipeline", build)
     second = service.answer("https://example.com/renamed.pdf", ["Waiting?"])

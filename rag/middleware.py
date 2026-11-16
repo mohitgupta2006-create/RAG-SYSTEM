@@ -25,7 +25,9 @@ class RequestMiddleware:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
-                message["headers"] = list(message.get("headers", [])) + [(b"x-request-id", identity.encode())]
+                message["headers"] = list(message.get("headers", [])) + [
+                    (b"x-request-id", identity.encode())
+                ]
             await send(message)
 
         bounded_receive = receive
@@ -38,7 +40,9 @@ class RequestMiddleware:
                         return
                     block = event.get("body", b"")
                     if len(body) + len(block) > self.max_body_bytes:
-                        return await JSONResponse({"detail": "Request body exceeds 256 KiB."}, 413)(scope, receive, respond)
+                        return await JSONResponse({"detail": "Request body exceeds 256 KiB."}, 413)(
+                            scope, receive, respond
+                        )
                     body.extend(block)
                     if not event.get("more_body", False):
                         break
@@ -54,5 +58,10 @@ class RequestMiddleware:
                 bounded_receive = replay
             await self.app(scope, bounded_receive, respond)
         finally:
-            logger.info("request_id=%s method=%s status=%s duration_ms=%.1f",
-                        identity, scope["method"], status_code, (time.monotonic() - start) * 1000)
+            logger.info(
+                "request_id=%s method=%s status=%s duration_ms=%.1f",
+                identity,
+                scope["method"],
+                status_code,
+                (time.monotonic() - start) * 1000,
+            )

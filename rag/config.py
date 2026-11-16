@@ -33,8 +33,8 @@ class Settings(BaseModel):
     @field_validator("gemini_model", "embedding_model")
     @classmethod
     def strip_model(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Model name cannot be blank")
+        if not value.strip() or value.strip().startswith("your_"):
+            raise ValueError("Set a nonblank model name instead of a placeholder")
         return value.strip()
 
     @classmethod
@@ -50,7 +50,8 @@ class Settings(BaseModel):
                 values[name] = raw
         if "allowed_document_hosts" in values:
             values["allowed_document_hosts"] = tuple(
-                host.strip().lower() for host in values["allowed_document_hosts"].split(",")
+                host.strip().lower()
+                for host in values["allowed_document_hosts"].split(",")
                 if host.strip()
             )
         return cls(**values)

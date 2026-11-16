@@ -6,8 +6,8 @@ import faiss
 import numpy as np
 import pymupdf as fitz
 
-from rag.errors import DocumentError
 from rag.chunking import create_chunks
+from rag.errors import DocumentError
 
 HEADER_FOOTER_MARGIN = 0.08
 REPEATING_CONTENT_THRESHOLD = 0.5
@@ -30,16 +30,28 @@ def parse_pdf(pdf_path: str, max_pages: int = 500) -> list[dict]:
                     content = block[4].strip()
                     if not content:
                         continue
-                    margin = block[3] <= height * HEADER_FOOTER_MARGIN or block[1] >= height * (1 - HEADER_FOOTER_MARGIN)
+                    margin = block[3] <= height * HEADER_FOOTER_MARGIN or block[1] >= height * (
+                        1 - HEADER_FOOTER_MARGIN
+                    )
                     key = " ".join(content.split()).casefold()
-                    elements.append(dict(content=content, page_num=page_index + 1, is_margin=margin, repeat_key=key))
+                    elements.append(
+                        dict(
+                            content=content,
+                            page_num=page_index + 1,
+                            is_margin=margin,
+                            repeat_key=key,
+                        )
+                    )
                     if margin:
                         occurrences[key].add(page_index)
             suppressed = {
-                key for key, pages in occurrences.items()
+                key
+                for key, pages in occurrences.items()
                 if len(pages) >= 2 and len(pages) / doc.page_count > REPEATING_CONTENT_THRESHOLD
             }
-            elements = [e for e in elements if not (e["is_margin"] and e["repeat_key"] in suppressed)]
+            elements = [
+                e for e in elements if not (e["is_margin"] and e["repeat_key"] in suppressed)
+            ]
             if not elements:
                 raise DocumentError()
             return elements
@@ -49,20 +61,31 @@ def parse_pdf(pdf_path: str, max_pages: int = 500) -> list[dict]:
         raise DocumentError() from exc
 
 
-def run_ingestion_pipeline(pdf_path: str, embedding_model, source_name: str = "document.pdf",
-                           max_pages: int = 500):
+def run_ingestion_pipeline(
+    pdf_path: str, embedding_model, source_name: str = "document.pdf", max_pages: int = 500
+):
     elements = parse_pdf(pdf_path, max_pages=max_pages)
-    token_limit = min(220, embedding_model.max_seq_length - embedding_model.tokenizer.num_special_tokens_to_add(pair=False))
-    chunks = create_chunks(elements, source_name,
-                           embedding_model.tokenizer, max_tokens=token_limit,
-                           overlap=min(32, max(0, token_limit // 4)))
+    token_limit = min(
+        220,
+        embedding_model.max_seq_length
+        - embedding_model.tokenizer.num_special_tokens_to_add(pair=False),
+    )
+    chunks = create_chunks(
+        elements,
+        source_name,
+        embedding_model.tokenizer,
+        max_tokens=token_limit,
+        overlap=min(32, max(0, token_limit // 4)),
+    )
     if not chunks:
         raise DocumentError()
     texts = [chunk["content"] for chunk in chunks]
-    embeddings = np.vstack([
-        embedding_model.encode(texts[i:i + BATCH_SIZE], convert_to_numpy=True)
-        for i in range(0, len(texts), BATCH_SIZE)
-    ]).astype("float32")
+    embeddings = np.vstack(
+        [
+            embedding_model.encode(texts[i : i + BATCH_SIZE], convert_to_numpy=True)
+            for i in range(0, len(texts), BATCH_SIZE)
+        ]
+    ).astype("float32")
     if embeddings.ndim != 2 or not np.isfinite(embeddings).all():
         raise DocumentError()
     faiss.normalize_L2(embeddings)

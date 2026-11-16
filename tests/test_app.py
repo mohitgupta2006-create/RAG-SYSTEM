@@ -19,7 +19,12 @@ def service():
 
 @pytest.fixture
 def client(service, tmp_path):
-    config = Settings(api_key="test-token", gemini_api_key="provider-token", gemini_model="test-model", cache_dir=tmp_path)
+    config = Settings(
+        api_key="test-token",
+        gemini_api_key="provider-token",
+        gemini_model="test-model",
+        cache_dir=tmp_path,
+    )
     with TestClient(create_app(config, lambda _: service), raise_server_exceptions=False) as value:
         yield value
     service.close.assert_called_once()
@@ -39,8 +44,13 @@ def test_both_routes_and_request_id(client, path):
 
 def test_auth_and_validation(client, service):
     assert client.post("/api/run", json=PAYLOAD).status_code == 401
-    assert client.post("/api/run", headers={"Authorization": "Bearer wrong"}, json=PAYLOAD).status_code == 401
-    assert client.post("/api/run", headers=HEADERS, json={**PAYLOAD, "queries": []}).status_code == 422
+    assert (
+        client.post("/api/run", headers={"Authorization": "Bearer wrong"}, json=PAYLOAD).status_code
+        == 401
+    )
+    assert (
+        client.post("/api/run", headers=HEADERS, json={**PAYLOAD, "queries": []}).status_code == 422
+    )
     service.answer.assert_not_called()
 
 
@@ -83,3 +93,13 @@ def test_health_remains_responsive_during_blocking_work(client, service):
         finally:
             release.set()
         assert pending.result(timeout=5).status_code == 200
+
+
+def test_create_app_does_not_read_credentials_or_load_models(monkeypatch):
+    def unexpected_configuration():
+        raise AssertionError("Import and app construction must not load settings")
+
+    monkeypatch.setattr(Settings, "from_env", unexpected_configuration)
+    application = create_app()
+    assert application.title == "Insurance Policy RAG API"
+    assert not hasattr(application.state, "service")

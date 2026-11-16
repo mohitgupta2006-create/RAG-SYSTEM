@@ -1,14 +1,2 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-pydantic
-sentence-transformers
-google-genai
-requests
-faiss-cpu
-numpy
-PyMuPDF
-tqdm
-camelot-py[cv]
-pandas
-rank-bm25
+-r requirements-core.txt
+sentence-transformers==6.3.0

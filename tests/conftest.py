@@ -18,8 +18,13 @@ class FakeEmbedding:
 
     def encode(self, texts, convert_to_numpy=True, **kwargs):
         # Deterministic vectors for offline orchestration tests, not quality evaluation.
-        return np.array([[1 + text.lower().count("waiting"),
-                          1 + text.lower().count("maternity"), 1] for text in texts], dtype="float32")
+        return np.array(
+            [
+                [1 + text.lower().count("waiting"), 1 + text.lower().count("maternity"), 1]
+                for text in texts
+            ],
+            dtype="float32",
+        )
 
 
 @pytest.fixture

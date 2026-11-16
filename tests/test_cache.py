@@ -10,7 +10,9 @@ from rag.cache import KnowledgeBase, KnowledgeBaseCache, cache_key
 def make_kb():
     index = faiss.IndexFlatIP(2)
     index.add(np.array([[1, 0]], dtype="float32"))
-    return KnowledgeBase(index, [dict(id="chunk1", content="Coverage", metadata=dict(page_number=1))])
+    return KnowledgeBase(
+        index, [dict(id="chunk1", content="Coverage", metadata=dict(page_number=1))]
+    )
 
 
 def test_disk_roundtrip_and_version_keys(tmp_path):
@@ -46,3 +48,22 @@ def test_concurrent_requests_build_once_and_lru_is_bounded(tmp_path):
     cache.get_or_create(cache_key("another", "model", 500), make_kb)
     assert len(cache._memory) == 1
     assert key not in cache._memory
+
+
+def test_independent_cache_instances_share_disk_lock(tmp_path):
+    first, second = KnowledgeBaseCache(tmp_path), KnowledgeBaseCache(tmp_path)
+    key = cache_key("shared", "model", 500)
+    builder = Mock(side_effect=make_kb)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = [pool.submit(cache.get_or_create, key, builder) for cache in (first, second)]
+        assert all(job.result().index.ntotal == 1 for job in jobs)
+    builder.assert_called_once()
+
+
+def test_unpublished_cache_pair_is_rebuilt(tmp_path):
+    key = cache_key("interrupted", "model", 500)
+    KnowledgeBaseCache(tmp_path).get_or_create(key, make_kb)
+    (tmp_path / f"{key}.manifest.json").unlink()
+    builder = Mock(side_effect=make_kb)
+    KnowledgeBaseCache(tmp_path).get_or_create(key, builder)
+    builder.assert_called_once()

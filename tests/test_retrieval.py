@@ -10,8 +10,13 @@ from rag.retrieval import Reranker, bm25_search, reciprocal_rank_fusion, semanti
 def knowledge_base():
     index = faiss.IndexFlatIP(2)
     index.add(np.array([[1, 0], [0, 1]], dtype="float32"))
-    return KnowledgeBase(index, [dict(id="waiting", content="Waiting period is 30 days"),
-                                 dict(id="maternity", content="Maternity has a separate limit")])
+    return KnowledgeBase(
+        index,
+        [
+            dict(id="waiting", content="Waiting period is 30 days"),
+            dict(id="maternity", content="Maternity has a separate limit"),
+        ],
+    )
 
 
 def test_semantic_search_normalizes_query_and_skips_negative_indices():

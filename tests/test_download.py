@@ -7,10 +7,14 @@ from rag.errors import DownloadError
 
 
 def dns(monkeypatch, address="93.184.216.34"):
-    monkeypatch.setattr("rag.download.socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", (address, 443))])
+    monkeypatch.setattr(
+        "rag.download.socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", (address, 443))]
+    )
 
 
-@pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "192.168.1.1"])
+@pytest.mark.parametrize(
+    "address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "192.168.1.1"]
+)
 def test_private_destinations_are_rejected(monkeypatch, address):
     dns(monkeypatch, address)
     with pytest.raises(DownloadError):
@@ -49,6 +53,7 @@ def test_invalid_or_oversized_download_is_cleaned(monkeypatch, tmp_path, blocks)
 def test_redirect_to_private_network_is_blocked(monkeypatch, tmp_path):
     def resolve(host, *a, **k):
         return [(2, 1, 6, "", ("127.0.0.1" if host == "internal" else "93.184.216.34", 443))]
+
     monkeypatch.setattr("rag.download.socket.getaddrinfo", resolve)
     response = Mock(status=302, headers={"Location": "https://internal/a.pdf"})
     pool = Mock()
@@ -63,4 +68,6 @@ def test_allowlist_and_filename(monkeypatch):
     dns(monkeypatch)
     with pytest.raises(DownloadError):
         _destination("https://other.example/a.pdf", ("trusted.example",))
-    assert source_filename("https://example.com/Policy%20Terms.pdf?secret=token") == "Policy Terms.pdf"
+    assert (
+        source_filename("https://example.com/Policy%20Terms.pdf?secret=token") == "Policy Terms.pdf"
+    )

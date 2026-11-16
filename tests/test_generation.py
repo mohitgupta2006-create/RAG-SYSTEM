@@ -7,13 +7,19 @@ from google.genai import errors
 from rag.errors import GenerationError
 from rag.generation import NO_ANSWER, generate_answer, render_answer
 
-
-CHUNKS = [dict(id="known", content="The waiting period is 30 days.",
-               metadata=dict(page_number=1, section_header="Waiting Periods"))]
+CHUNKS = [
+    dict(
+        id="known",
+        content="The waiting period is 30 days.",
+        metadata=dict(page_number=1, section_header="Waiting Periods"),
+    )
+]
 
 
 def good_answer():
-    return json.dumps(dict(answerable=True, answer="The waiting period is 30 days.", source_ids=["known"]))
+    return json.dumps(
+        dict(answerable=True, answer="The waiting period is 30 days.", source_ids=["known"])
+    )
 
 
 def test_citations_are_rendered_from_real_metadata():
@@ -21,10 +27,16 @@ def test_citations_are_rendered_from_real_metadata():
     assert "[Source: policy.pdf, Page 1, Section: Waiting Periods]" in result
 
 
-@pytest.mark.parametrize("raw", ["not JSON", "", "null", json.dumps(dict(
-    answerable=True, answer="Invented claim", source_ids=["unknown"])),
-    json.dumps(dict(answerable=True, answer="Unsupported", source_ids=[])),
-])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not JSON",
+        "",
+        "null",
+        json.dumps(dict(answerable=True, answer="Invented claim", source_ids=["unknown"])),
+        json.dumps(dict(answerable=True, answer="Unsupported", source_ids=[])),
+    ],
+)
 def test_malformed_or_unknown_citations_are_rejected(raw):
     with pytest.raises(GenerationError):
         render_answer(raw, CHUNKS, "policy.pdf")
@@ -47,7 +59,9 @@ def test_retries_transient_error_but_never_sleeps_after_last_attempt():
 
 def test_provider_error_does_not_become_answer_or_leak_details():
     client, sleeper = Mock(), Mock()
-    client.models.generate_content.side_effect = errors.APIError(403, {"message": "secret upstream body"})
+    client.models.generate_content.side_effect = errors.APIError(
+        403, {"message": "secret upstream body"}
+    )
     with pytest.raises(GenerationError) as result:
         generate_answer("question", CHUNKS, client, "model", "a.pdf", sleep=sleeper)
     assert "secret" not in result.value.public_message
@@ -60,4 +74,5 @@ def test_structured_config_and_success():
     assert "30 days" in generate_answer("question", CHUNKS, client, "model", "a.pdf")
     config = client.models.generate_content.call_args.kwargs["config"]
     from google.genai.types import GenerateContentConfig
+
     assert GenerateContentConfig(**config).response_mime_type == "application/json"

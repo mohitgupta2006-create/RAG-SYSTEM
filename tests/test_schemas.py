@@ -5,11 +5,18 @@ from rag.auth import valid_api_key
 from rag.schemas import EndpointRequest
 
 
-@pytest.mark.parametrize("change", [
-    {"document": "file:///etc/passwd"}, {"document": "https://user:pass@example.com/a.pdf"},
-    {"queries": []}, {"queries": [" "]}, {"queries": ["x" * 2001]},
-    {"queries": ["question"] * 21}, {"unexpected": "value"},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"document": "file:///etc/passwd"},
+        {"document": "https://user:pass@example.com/a.pdf"},
+        {"queries": []},
+        {"queries": [" "]},
+        {"queries": ["x" * 2001]},
+        {"queries": ["question"] * 21},
+        {"unexpected": "value"},
+    ],
+)
 def test_rejects_invalid_requests(change):
     payload = dict(document="https://example.com/policy.pdf", queries=["Coverage?"])
     payload.update(change)

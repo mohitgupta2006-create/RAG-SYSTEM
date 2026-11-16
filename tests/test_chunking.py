@@ -1,5 +1,6 @@
-from rag.chunking import create_chunks
 from conftest import FakeTokenizer
+
+from rag.chunking import create_chunks
 
 
 def test_long_chunks_are_bounded_and_overlap():
@@ -11,9 +12,11 @@ def test_long_chunks_are_bounded_and_overlap():
 
 
 def test_lists_never_merge_across_pages():
-    elements = [dict(content="1. BENEFITS", page_num=1),
-                dict(content="a) Waiting period is 30 days.", page_num=1),
-                dict(content="b) Maternity has separate limits.", page_num=2)]
+    elements = [
+        dict(content="1. BENEFITS", page_num=1),
+        dict(content="a) Waiting period is 30 days.", page_num=1),
+        dict(content="b) Maternity has separate limits.", page_num=2),
+    ]
     chunks = create_chunks(elements, "policy.pdf", FakeTokenizer())
     assert [c["metadata"]["page_number"] for c in chunks] == [1, 2]
     assert all(c["metadata"]["section_header"] == "BENEFITS" for c in chunks)

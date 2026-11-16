@@ -1,250 +1,226 @@
-# Advanced RAG System for Insurance Policy Analysis
+# Insurance Policy RAG System
 
-> A production-ready Retrieval-Augmented Generation (RAG) system designed to ingest complex insurance policy PDFs and answer natural language questions with verifiable citations.
+[![Checks](https://github.com/mohitgupta2006-create/RAG-SYSTEM/actions/workflows/ci.yml/badge.svg)](https://github.com/mohitgupta2006-create/RAG-SYSTEM/actions/workflows/ci.yml)
 
-## Table of Contents
+A FastAPI service that answers questions about a PDF using hybrid retrieval, cross-encoder reranking, and Google Gemini. Answers include citations assembled from actual document metadata. The service accepts one public PDF URL and up to 20 questions per request.
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Local Setup](#local-setup)
-  - [Docker Setup](#docker-setup)
-- [API Reference](#api-reference)
-- [Testing](#testing)
-- [How It Works](#how-it-works)
-- [Future Enhancements](#future-enhancements)
-- [License](#license)
-
-## Overview
-
-Insurance policy documents are complex — dense legal language, multi-column layouts, nested tables, and distributed logic across sections. This system solves that challenge by building a multi-stage RAG pipeline that:
-
-1. **Parses** PDFs with high fidelity using PyMuPDF
-2. **Chunks** content intelligently based on document structure (not arbitrary length)
-3. **Indexes** using FAISS for fast semantic search
-4. **Retrieves** via hybrid search (semantic + keyword) with cross-encoder re-ranking
-5. **Generates** grounded answers using Google Gemini with full source citations
+This repository includes regression tests, bounded downloads, content-addressed caching, and Docker support. It is a prototype with explicit limitations; it does not guarantee that a generated insurance interpretation is correct.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Offline Indexing Pipeline               │
-│                                                         │
-│  PDF → PyMuPDF Parser → Structural Chunking → Embedding │
-│                                              → FAISS     │
-└─────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────┐
-│                  Online Inference Pipeline               │
-│                                                         │
-│  User Query → Hybrid Search (BM25 + Semantic)           │
-│             → Cross-Encoder Re-ranking                   │
-│             → Context Augmentation → Gemini LLM → Answer │
-└─────────────────────────────────────────────────────────┘
-```
-
-## Features
-
-- **High-fidelity PDF parsing** with PyMuPDF — preserves structure, font metadata, and layout
-- **Intelligent structural chunking** — respects document hierarchy (sections, subsections, lists)
-- **Header/footer suppression** — automatically detects and removes repeating content
-- **Hybrid retrieval** — combines BM25 keyword search with semantic vector search via Reciprocal Rank Fusion
-- **Cross-encoder re-ranking** — uses `ms-marco-MiniLM-L-6-v2` for precision re-ranking
-- **Grounded generation** — Gemini 2.0 Flash with strict context-only instructions
-- **Source citations** — every answer includes document name, page number, and section
-- **Document caching** — processed documents are cached by hash to avoid re-ingestion
-- **In-memory index caching** — FAISS indexes and chunks cached in memory for fast repeated queries
-- **REST API** — FastAPI with Bearer token authentication
-- **Docker-ready** — fully containerized with one-command deployment
-
-## Tech Stack
-
-| Component        | Technology                          |
-|------------------|-------------------------------------|
-| PDF Parsing      | PyMuPDF (Fitz)                      |
-| Embeddings       | sentence-transformers/all-MiniLM-L6-v2 |
-| Vector Store     | FAISS (CPU)                         |
-| Keyword Search   | rank-bm25                           |
-| Re-ranking       | cross-encoder/ms-marco-MiniLM-L-6-v2 |
-| LLM              | Google Gemini 2.0 Flash             |
-| API Framework    | FastAPI + Uvicorn                   |
-| Containerization | Docker                              |
-
-## Project Structure
-
-```
-advanced-RAG-system/
-├── app.py                              # FastAPI application & API endpoints
-├── ingestion_pipeline/
-│   ├── __init__.py
-│   └── ingestionPipeline.py            # PDF parsing, chunking, embedding, FAISS indexing
-├── inference_pipeline/
-│   ├── __init__.py
-│   └── inferencePipeline.py            # Hybrid search, re-ranking, answer generation
-├── testapi.py                          # Test script with sample queries
-├── requirements.txt                    # Python dependencies
-├── Dockerfile                          # Container configuration
-├── .env.example                        # Environment variables template
-├── .gitignore
-└── README.md                           # This file
+```mermaid
+flowchart TD
+    A[Authenticated request: PDF URL and questions] --> B[Validate URL and resolve public IP]
+    B --> C[Download to a unique temporary directory]
+    C --> D[Hash PDF and pipeline configuration]
+    D --> E{Cached knowledge base?}
+    E -->|No| F[Extract page text and suppress repeated margins]
+    F --> G[Create overlapping token-bounded chunks]
+    G --> H[Normalize embeddings and build FAISS index]
+    H --> I[Publish index, chunks, and integrity manifest]
+    E -->|Yes| J[Load validated index and chunks]
+    I --> K[Semantic search and cached BM25]
+    J --> K
+    K --> L[Reciprocal rank fusion and cross-encoder reranking]
+    L --> M[Gemini structured answer]
+    M --> N[Validate source IDs and attach page citations]
 ```
 
-## Quick Start
+Indexing happens on the first request for a document. Later requests reuse its disk or memory cache, but still download the PDF to verify its content hash. Questions are embedded in one batch and answered sequentially, preserving request order.
 
-### Prerequisites
+## Improvements in this version
 
-- Python 3.11+
-- A Google Gemini API key ([get one here](https://ai.google.dev/))
-- (Optional) Docker & Docker Compose
+- Single-page PDFs retain their content. Repeated headers and footers are identified only in page margins and must appear on multiple distinct pages.
+- PDF text blocks retain page boundaries. Chunk overlap follows tokenizer offsets, with a limit below the embedding model's input length.
+- Citations use one-based PDF page numbers and the current URL's filename, without its query string. List content never merges across pages.
+- Normalized FAISS vectors provide cosine ranking. BM25 indexes are reused, and rank fusion uses stable chunk IDs.
+- Downloads have a byte limit, timeouts, PDF-signature checks, redirect validation, and optional hostname allowlists. Connections are pinned to a validated public IP while preserving HTTPS certificate verification.
+- Cache keys include the PDF hash, embedding model name, page limit, and pipeline version. Checksums detect incomplete or corrupted cache pairs; file locks prevent duplicate builds.
+- A bounded memory LRU limits loaded documents. Requests use isolated temporary directories and clean them up on both success and failure.
+- Blocking work runs in FastAPI's thread pool. Admission limits return a retryable response when the service is busy.
+- Structured generation validates cited chunk IDs. Provider failures return HTTP errors instead of being included as successful answers.
+- Startup loads configuration and models explicitly; importing the API does not download models or require credentials. Logs include request IDs, status, and timing without signed document URLs or question text.
 
-### Local Setup
+## Requirements
 
-1. **Clone and create virtual environment:**
+- CPython 3.12 or 3.13. Local verification uses Python 3.12; CI is configured for both versions.
+- A Google Gemini API key and an available text-generation model that supports structured JSON output.
+- Internet access for PDF downloads, Gemini, and the first download of embedding/reranking models.
+- Enough memory for PyTorch, the embedding model, the optional reranker, and document indexes. Dependency and model downloads can be large.
+
+The Gemini model is deliberately configurable, with no hardcoded default. Select a currently available model from Google's [model documentation](https://ai.google.dev/gemini-api/docs/models), and check its [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations).
+
+## Local setup
 
 ```bash
-cd advanced-RAG-system
-python -m venv venv
-source venv/bin/activate
+git clone https://github.com/mohitgupta2006-create/RAG-SYSTEM.git
+cd RAG-SYSTEM
+python -m venv .venv
 ```
 
-2. **Install dependencies:**
+Activate the environment on Windows PowerShell:
 
-```bash
-pip install -r requirements.txt
+```powershell
+.\.venv\Scripts\Activate.ps1
+Copy-Item .env.example .env
 ```
 
-3. **Set up environment variables:**
+Or on macOS/Linux:
 
 ```bash
+source .venv/bin/activate
 cp .env.example .env
 ```
 
-Edit `.env` and add your API keys:
-
-```
-API_KEY=your_secret_api_key
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-4. **Start the server:**
+Install the full runtime, edit `.env`, and start the API:
 
 ```bash
-python app.py
+python -m pip install -r requirements.txt
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-The API will be available at `http://127.0.0.1:8000`.
+Set real values for `API_KEY`, `GEMINI_API_KEY`, and `GEMINI_MODEL` before startup. `API_KEY` is your own client authentication secret; `GEMINI_API_KEY` authenticates requests to Google. Placeholder values are rejected.
 
-Interactive API docs: `http://127.0.0.1:8000/docs`
+Open [Swagger UI](http://127.0.0.1:8000/docs). Startup loads the embedding model; the reranker loads on its first use. If reranking fails, requests use fused retrieval order until the process restarts.
 
-### Docker Setup
+## Configuration
 
-1. **Build the image:**
+Environment variables override `.env` values.
 
-```bash
-docker build -t advanced-rag-system .
-```
+| Variable | Default | Purpose |
+|---|---|---|
+| `API_KEY` | Required | Client Bearer token |
+| `GEMINI_API_KEY` | Required | Google provider credential |
+| `GEMINI_MODEL` | Required | Available Gemini model identifier |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model with a fast tokenizer |
+| `CACHE_DIR` | `knowledge_base_cache` | Disk indexes, manifests, locks, and temporary files |
+| `MAX_DOCUMENT_BYTES` | `26214400` | Maximum PDF download size: 25 MiB |
+| `MAX_PAGES` | `500` | Maximum PDF page count |
+| `DOWNLOAD_TIMEOUT` | `30` | Download time budget in seconds |
+| `GENERATION_TIMEOUT` | `60` | Generation and retry budget per question in seconds |
+| `MAX_CACHED_DOCUMENTS` | `8` | Loaded knowledge bases per worker |
+| `MAX_CONCURRENT_REQUESTS` | `2` | Concurrent processing requests per worker |
+| `ALLOWED_DOCUMENT_HOSTS` | Empty | Optional comma-separated exact hostnames, including redirect destinations |
 
-2. **Run with environment variables:**
+Download destinations must resolve exclusively to public addresses and use default HTTP/HTTPS ports. Private networks, URL credentials, HTTPS-to-HTTP redirects, and compressed HTTP bodies are rejected. Signed query strings are supported. OS DNS resolution can outlast the application download budget; use infrastructure DNS and request timeouts as additional controls.
 
-```bash
-docker run -p 8000:8000 \
-  -e API_KEY=your_secret_api_key \
-  -e GEMINI_API_KEY=your_gemini_api_key \
-  advanced-rag-system
-```
+## API
 
-## API Reference
+### Health and readiness
 
-### Health Check
+- `GET /health`: process liveness with a UTC timestamp.
+- `GET /ready`: confirms that local configuration, cache, embedding model, and client initialization completed. It does not probe Gemini or guarantee provider quota.
+- `GET /`: service information.
 
-```
-GET /health
-```
+### Answer questions
 
-**Response:**
-```json
-{
-  "status": "Healthy",
-  "timestamp": "2026-04-04T12:00:00.000000"
-}
-```
+`POST /api/run` is the main route. `POST /hackrx/run` remains available with the same request and response format.
 
-### Process Document & Answer Queries
-
-```
+```http
 POST /api/run
-Authorization: Bearer <API_KEY>
-```
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
 
-**Request Body:**
-```json
 {
-  "document": "https://example.com/policy.pdf",
+  "document": "https://your-public-host.example/policy.pdf",
   "queries": [
     "What is the waiting period for pre-existing diseases?",
-    "Does this policy cover maternity expenses?"
+    "Is maternity covered?"
   ]
 }
 ```
 
-**Response:**
+Illustrative response; actual content depends on the PDF:
+
 ```json
 {
   "answers": [
-    "The waiting period for pre-existing diseases is 24 months from the policy inception date [Source: policy.pdf, Page 15, Section: Waiting Periods].",
-    "Yes, maternity expenses are covered subject to a 9-month waiting period and a sub-limit of ₹50,000 per delivery [Source: policy.pdf, Page 22, Section: Maternity Benefits]."
+    "The waiting period is 24 months. [Source: policy.pdf, Page 15, Section: WAITING PERIODS]",
+    "The provided document does not contain enough information to answer this question."
   ]
 }
 ```
 
-## Testing
+Requests accept 1–20 nonblank questions of at most 2,000 characters each, a document URL of at most 8,192 characters, and a body of at most 256 KiB. Unexpected JSON fields are rejected. Each response normally includes an `X-Request-ID` header for diagnostics.
 
-Run the included test script to verify the API:
+| Status | Meaning |
+|---|---|
+| `200` | Answer strings in question order; an unsupported question may receive an explicit no-information response |
+| `400` | Download failed or destination was blocked |
+| `401` | Missing or invalid Bearer token |
+| `413` | Request body exceeded the limit |
+| `422` | Invalid request, invalid/encrypted PDF, excessive page count, or no extractable text |
+| `502` | Provider failed or returned malformed output or invalid citations |
+| `503` | Cache unavailable or concurrency limit reached; busy responses include `Retry-After: 10` |
+| `500` | Unexpected internal failure; details are not returned |
+
+If any question fails during generation, the request fails as a whole. Results from earlier questions are not returned partially. A batch of many questions can take longer than a single generation timeout.
+
+## Tests and development
+
+The offline suite uses real generated PDFs and FAISS indexes, deterministic fake embeddings, and a mocked generation client. It covers extraction, chunk bounds, downloads, cache recovery, retrieval, citation validation, authentication, API responsiveness, and cleanup. It does not measure retrieval quality or make live Gemini calls.
+
+Install development dependencies without neural model downloads:
 
 ```bash
-# Set your API key first
-export API_KEY=your_api_key_here
-
-python testapi.py
+python -m pip install -r requirements-dev.txt
+python -m pip check
+python -m pytest -q
+python -m ruff check .
+python -m ruff format --check .
 ```
 
-Or test via Swagger UI at `http://127.0.0.1:8000/docs`.
+GitHub Actions runs these checks on pushes and pull requests. Direct dependencies are pinned; transitive dependencies are resolved by pip rather than a complete lockfile.
 
-## How It Works
+For a live smoke test, start the full service and provide your own PDF URL:
 
-### Ingestion Pipeline
+```bash
+python testapi.py --document "https://your-host.example/policy.pdf" --query "What is the waiting period?"
+```
 
-1. **PDF Parsing** — PyMuPDF extracts text with word-level metadata (position, font size, weight)
-2. **Header/Footer Detection** — Repeating content across pages is identified and suppressed
-3. **Structural Chunking** — Content is split by logical document structure (sections, lists, paragraphs), not fixed character counts
-4. **List Merging** — Related list items are merged with their parent context
-5. **Metadata Enrichment** — Each chunk gets source document, page number, and section header
-6. **Embedding** — Chunks are vectorized using `all-MiniLM-L6-v2`
-7. **FAISS Indexing** — Vectors are stored in a FAISS L2 index, chunks saved as JSON
+Repeat `--query` for more questions. The script reads `API_KEY` and optional `API_URL` from the environment or `.env`, validates response shape, and exits nonzero on failure.
 
-### Inference Pipeline
+## Docker
 
-1. **Hybrid Retrieval** — Both BM25 (keyword) and semantic (FAISS) search run in parallel
-2. **Reciprocal Rank Fusion** — Results from both searches are merged using RRF
-3. **Cross-Encoder Re-ranking** — Top fused results are re-scored for maximum relevance
-4. **Context Augmentation** — Top 5 chunks are formatted with source metadata
-5. **Grounded Generation** — Gemini generates answers strictly from provided context with citations
+```bash
+docker build -t insurance-rag .
+docker run --rm -p 8000:8000 --env-file .env -v rag-cache:/app/knowledge_base_cache -v rag-models:/home/user/.cache/huggingface insurance-rag
+```
 
-## Future Enhancements
+The container runs as a non-root user and includes a liveness health check. `.dockerignore` excludes secrets, local environments, caches, and Git history. Model downloads and startup may take time; adjust health-check startup timing for slow networks. Named volumes preserve document indexes and model weights. Bind mounts must be writable by UID 1000.
 
-- Domain-specific embedding model fine-tuning (e.g., LEGAL-BERT)
-- Advanced RAG techniques: Self-RAG, Corrective RAG (CRAG)
-- Multi-document comparison (agentic architecture)
-- Streaming responses for lower perceived latency
-- Conversational memory for follow-up questions
-- Table-specific extraction with PDFPlumber
-- Metadata filtering on FAISS queries
+## Project layout
 
-## License
+```text
+app.py                         FastAPI factory, lifespan, authentication, routes
+rag/
+  config.py                    Validated environment configuration
+  schemas.py                   Bounded request and response models
+  download.py                  Guarded, IP-pinned PDF downloads
+  chunking.py                  Page-aware token windows and stable chunk IDs
+  cache.py                     Versioned disk cache, integrity checks, memory LRU
+  retrieval.py                 BM25, semantic search, rank fusion, reranking
+  generation.py                Structured generation and source validation
+  service.py                   Request orchestration and concurrency limits
+  middleware.py                Request-size limits and safe timing logs
+  errors.py                    Typed public failures
+ingestion_pipeline/            PDF parsing and embedding
+inference_pipeline/            Retrieval-to-generation orchestration
+tests/                         Offline regression and integration suite
+testapi.py                     Optional live API smoke test
+.github/workflows/ci.yml        Test and style checks
+```
 
-This project is open-source.
+## Limitations and deployment notes
+
+- Text extraction supports PDFs with a text layer. OCR, reliable table reconstruction, and complex multi-column reading order are not implemented.
+- Section labels use heading heuristics; they can fall back to `Preamble`. Page numbers refer to PDF page positions, not printed page labels.
+- Validating source IDs proves that cited passages were retrieved. It does not prove that every answer claim follows from those passages. Human review and a representative evaluation dataset are needed for insurance decisions.
+- Document text is sent to Google for generation. Review data-handling requirements before processing confidential policies.
+- Disk cache entries have no TTL or automatic eviction. Apply a retention policy and disk quotas. Memory limits apply separately to each worker.
+- Cache integrity checks detect accidental corruption, not malicious tampering by a writer with filesystem access. Keep the cache directory trusted. Bump `PIPELINE_VERSION` after changing extraction/chunking behavior or updating model weights under an unchanged model name.
+- File locking assumes a filesystem with working cross-process locks. Use a local persistent cache volume, or move to a coordinated external store when scaling across hosts.
+- Admission limits are per process, not per user. Add TLS, gateway rate limits, request deadlines, egress rules, and authentication suited to your deployment before public exposure.
+- Tests verify behavior with fake models. Live embedding/reranker downloads, Gemini quota/model availability, Docker builds, and answer accuracy require separate environment-specific verification.
+
+No license is currently declared in this repository.

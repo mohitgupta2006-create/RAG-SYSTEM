@@ -24,9 +24,11 @@ def semantic_search(query_vector, kb, top_k=10):
         raise ValueError("Query embedding must contain finite values")
     faiss.normalize_L2(vector)
     scores, indices = kb.index.search(vector, min(top_k, len(kb.chunks)))
-    return [dict(chunk=kb.chunks[int(i)], score=float(score))
-            for i, score in zip(indices[0], scores[0])
-            if 0 <= i < len(kb.chunks) and np.isfinite(score)]
+    return [
+        dict(chunk=kb.chunks[int(i)], score=float(score))
+        for i, score in zip(indices[0], scores[0], strict=True)
+        if 0 <= i < len(kb.chunks) and np.isfinite(score)
+    ]
 
 
 def bm25_search(query, kb, top_k=10):
@@ -36,8 +38,10 @@ def bm25_search(query, kb, top_k=10):
         if kb.bm25 is None:
             corpus = [tokenize(chunk["content"]) for chunk in kb.chunks]
             # Punctuation-only chunks must not produce a zero-length BM25 corpus.
-            kb.bm25 = (BM25Okapi([tokens or ["__empty__"] for tokens in corpus]),
-                       [set(tokens) for tokens in corpus])
+            kb.bm25 = (
+                BM25Okapi([tokens or ["__empty__"] for tokens in corpus]),
+                [set(tokens) for tokens in corpus],
+            )
     model, token_sets = kb.bm25
     tokens = tokenize(query)
     scores = model.get_scores(tokens)
@@ -76,11 +80,17 @@ class Reranker:
             try:
                 if self._model is None:
                     from sentence_transformers import CrossEncoder
+
                     self._model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
                 scores = self._model.predict([[query, chunk["content"]] for chunk in chunks])
                 if len(scores) != len(chunks) or not np.isfinite(scores).all():
                     raise ValueError("Invalid reranker scores")
-                return [chunk for chunk, _ in sorted(zip(chunks, scores), key=lambda pair: -pair[1])[:top_k]]
+                return [
+                    chunk
+                    for chunk, _ in sorted(
+                        zip(chunks, scores, strict=True), key=lambda pair: -pair[1]
+                    )[:top_k]
+                ]
             except Exception as exc:
                 self._failed = True
                 logger.warning("Reranker unavailable; using fused ranking (%s)", type(exc).__name__)

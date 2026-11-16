@@ -1,57 +1,51 @@
-import os
+"""Manual smoke test: python testapi.py --document https://host/policy.pdf"""
+
+import argparse
 import json
+import os
+import sys
 import time
+
+import requests
 from dotenv import load_dotenv
 
-load_dotenv()
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/hackrx/run")
-API_KEY = os.getenv("API_KEY", "your_api_key_here")
-
-headers = {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "Authorization": f"Bearer {API_KEY}",
-}
-
-payload = {
-    "document": "https://hackrx.blob.core.windows.net/assets/policy.pdf?sv=2023-01-03&st=2025-07-04T09%3A11%3A24Z&se=2027-07-05T09%3A11%3A00Z&sr=b&sp=r&sig=N4a9OU0w0QXO6AOIBiu4bpl7AXvEZogeT%2FjUHNO7HzQ%3D",
-    "queries": [
-        "What is the grace period for premium payment under the National Parivar Mediclaim Plus Policy?",
-        "What is the waiting period for pre-existing diseases (PED) to be covered?",
-    ],
-}
-
-
-def test_rag_api():
-    import requests
-
-    print(f"Sending request to: {API_URL}")
-    print("-" * 30)
-
-    start_time = time.time()
-
+def main():
+    load_dotenv()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--document", required=True, help="Public PDF URL")
+    parser.add_argument("--query", action="append", help="Repeat for multiple questions")
+    args = parser.parse_args()
+    token = os.getenv("API_KEY")
+    if not token or token.startswith("your_"):
+        parser.error("Set API_KEY in the environment or .env")
+    url = os.getenv("API_URL", "http://127.0.0.1:8000/api/run")
+    payload = {"document": args.document, "queries": args.query or ["What is the waiting period?"]}
+    started = time.monotonic()
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=300)
-        end_time = time.time()
-        print(f"Request completed in {end_time - start_time:.2f} seconds.")
-        print("-" * 30)
-
-        if response.status_code == 200:
-            print("✅ Request successful (Status Code: 200)")
-            print("\n--- API Response ---")
-            print(json.dumps(response.json(), indent=2))
-        else:
-            print(f"❌ Request failed with Status Code: {response.status_code}")
-            print("\n--- Error Response ---")
-            try:
-                print(json.dumps(response.json(), indent=2))
-            except json.JSONDecodeError:
-                print(response.text)
-
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while making the request: {e}")
+        response = requests.post(
+            url, headers={"Authorization": f"Bearer {token}"}, json=payload, timeout=(10, 300)
+        )
+        response.raise_for_status()
+        data = response.json()
+        answers = data.get("answers")
+        if (
+            not isinstance(answers, list)
+            or len(answers) != len(payload["queries"])
+            or any(not isinstance(answer, str) or not answer.strip() for answer in answers)
+        ):
+            raise ValueError("Unexpected API response shape")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        print(f"Completed in {time.monotonic() - started:.2f}s")
+        return 0
+    except (requests.RequestException, ValueError) as exc:
+        # Avoid printing request URLs or upstream response bodies containing signed tokens.
+        print(
+            f"Smoke test failed ({type(exc).__name__}). Check the API status and logs.",
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":
-    test_rag_api()
+    raise SystemExit(main())

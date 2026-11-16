@@ -55,17 +55,24 @@ class KnowledgeBaseCache:
         index_path, chunks_path, manifest_path = self._paths(key)
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if (manifest["version"] != PIPELINE_VERSION or manifest["key"] != key
-                    or manifest["index_sha256"] != file_hash(index_path)
-                    or manifest["chunks_sha256"] != file_hash(chunks_path)):
+            if (
+                manifest["version"] != PIPELINE_VERSION
+                or manifest["key"] != key
+                or manifest["index_sha256"] != file_hash(index_path)
+                or manifest["chunks_sha256"] != file_hash(chunks_path)
+            ):
                 return None
             index = faiss.read_index(str(index_path))
             chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
             if not isinstance(chunks, list) or not chunks or index.ntotal != len(chunks):
                 return None
             for chunk in chunks:
-                if (not isinstance(chunk["content"], str) or not chunk["content"].strip()
-                        or not chunk["id"] or chunk["metadata"]["page_number"] < 1):
+                if (
+                    not isinstance(chunk["content"], str)
+                    or not chunk["content"].strip()
+                    or not chunk["id"]
+                    or chunk["metadata"]["page_number"] < 1
+                ):
                     return None
             if len({chunk["id"] for chunk in chunks}) != len(chunks):
                 return None
@@ -84,15 +91,22 @@ class KnowledgeBaseCache:
             index_path, chunks_path, manifest_path = temporary
             faiss.write_index(kb.index, str(index_path))
             chunks_path.write_text(json.dumps(kb.chunks, ensure_ascii=False), encoding="utf-8")
-            manifest_path.write_text(json.dumps(dict(
-                key=key, version=PIPELINE_VERSION, index_sha256=file_hash(index_path),
-                chunks_sha256=file_hash(chunks_path),
-            )), encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    dict(
+                        key=key,
+                        version=PIPELINE_VERSION,
+                        index_sha256=file_hash(index_path),
+                        chunks_sha256=file_hash(chunks_path),
+                    )
+                ),
+                encoding="utf-8",
+            )
             os.replace(index_path, final_index)
             os.replace(chunks_path, final_chunks)
             # Publish the integrity manifest last; interrupted pairs are rebuilt.
             os.replace(manifest_path, final_manifest)
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             raise CacheError() from exc
         finally:
             for path in temporary:

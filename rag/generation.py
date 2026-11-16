@@ -37,23 +37,31 @@ def render_answer(raw: str, chunks: list[dict], source_name: str) -> str:
         return NO_ANSWER
     by_id = {chunk["id"]: chunk for chunk in chunks}
     ids = list(dict.fromkeys(answer.source_ids))
-    if (not answer.answer.strip() or not ids or any(identity not in by_id for identity in ids)
-            or "[source:" in answer.answer.casefold()):
+    if (
+        not answer.answer.strip()
+        or not ids
+        or any(identity not in by_id for identity in ids)
+        or "[source:" in answer.answer.casefold()
+    ):
         raise GenerationError()
     citations = []
     for identity in ids:
         meta = by_id[identity]["metadata"]
-        citations.append(f"[Source: {source_name}, Page {meta['page_number']}, Section: {meta['section_header']}]")
+        citations.append(
+            f"[Source: {source_name}, Page {meta['page_number']}, Section: {meta['section_header']}]"
+        )
     return answer.answer.strip() + " " + " ".join(dict.fromkeys(citations))
 
 
-def generate_answer(query, chunks, client, model_name, source_name,
-                    timeout=60, max_attempts=3, sleep=time.sleep):
+def generate_answer(
+    query, chunks, client, model_name, source_name, timeout=60, max_attempts=3, sleep=time.sleep
+):
     if not chunks:
         return NO_ANSWER
-    payload = json.dumps(dict(question=query, passages=[
-        dict(id=c["id"], text=c["content"]) for c in chunks
-    ]), ensure_ascii=False)
+    payload = json.dumps(
+        dict(question=query, passages=[dict(id=c["id"], text=c["content"]) for c in chunks]),
+        ensure_ascii=False,
+    )
     deadline = time.monotonic() + timeout
     for attempt in range(max_attempts):
         remaining = deadline - time.monotonic()
@@ -61,10 +69,13 @@ def generate_answer(query, chunks, client, model_name, source_name,
             break
         try:
             response = client.models.generate_content(
-                model=model_name, contents=payload,
+                model=model_name,
+                contents=payload,
                 config=dict(
-                    system_instruction=SYSTEM_INSTRUCTION, temperature=0,
-                    response_mime_type="application/json", response_schema=GroundedAnswer,
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0,
+                    response_mime_type="application/json",
+                    response_schema=GroundedAnswer,
                     max_output_tokens=2048,
                     http_options={"timeout": max(1, int(remaining * 1000))},
                 ),
@@ -73,10 +84,12 @@ def generate_answer(query, chunks, client, model_name, source_name,
         except genai_errors.APIError as exc:
             if exc.code not in {429, 500, 502, 503, 504} or attempt == max_attempts - 1:
                 break
-            delay = min(2 ** attempt + random.uniform(0, 0.25), 8)
+            delay = min(2**attempt + random.uniform(0, 0.25), 8)
             if delay >= deadline - time.monotonic():
                 break
-            logger.warning("Retrying answer provider (status=%s, attempt=%s)", exc.code, attempt + 1)
+            logger.warning(
+                "Retrying answer provider (status=%s, attempt=%s)", exc.code, attempt + 1
+            )
             sleep(delay)
         except GenerationError:
             raise

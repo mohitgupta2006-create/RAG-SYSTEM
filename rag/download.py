@@ -26,9 +26,11 @@ def _destination(url: str, allowed_hosts: tuple[str, ...] = ()) -> tuple:
         if allowed_hosts and host not in allowed_hosts:
             raise ValueError("Document host is not allowed")
         addresses = {item[4][0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
-        if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        if not addresses or any(
+            not ipaddress.ip_address(address).is_global for address in addresses
+        ):
             raise ValueError("Document host must resolve exclusively to public IP addresses")
-        return parsed, host, port, sorted(addresses)[0]
+        return parsed, host, port, min(addresses)
     except (ValueError, UnicodeError, OSError) as exc:
         raise DownloadError() from exc
 
@@ -40,8 +42,15 @@ def source_filename(url: str) -> str:
     return name[:150] or "document.pdf"
 
 
-def download_pdf(url: str, destination: Path, *, max_bytes: int, timeout: float,
-                 allowed_hosts: tuple[str, ...] = (), max_redirects: int = 3) -> None:
+def download_pdf(
+    url: str,
+    destination: Path,
+    *,
+    max_bytes: int,
+    timeout: float,
+    allowed_hosts: tuple[str, ...] = (),
+    max_redirects: int = 3,
+) -> None:
     deadline = time.monotonic() + timeout
     try:
         for hop in range(max_redirects + 1):
@@ -52,8 +61,11 @@ def download_pdf(url: str, destination: Path, *, max_bytes: int, timeout: float,
             kwargs = dict(host=address, port=port, maxsize=1)
             if parsed.scheme == "https":
                 pool = urllib3.HTTPSConnectionPool(
-                    **kwargs, assert_hostname=host, server_hostname=host,
-                    cert_reqs="CERT_REQUIRED", ca_certs=certifi.where(),
+                    **kwargs,
+                    assert_hostname=host,
+                    server_hostname=host,
+                    cert_reqs="CERT_REQUIRED",
+                    ca_certs=certifi.where(),
                 )
             else:
                 pool = urllib3.HTTPConnectionPool(**kwargs)
@@ -62,9 +74,16 @@ def download_pdf(url: str, destination: Path, *, max_bytes: int, timeout: float,
                 if parsed.query:
                     target += "?" + parsed.query
                 response = pool.urlopen(
-                    "GET", target, headers={"Host": host, "Accept-Encoding": "identity"},
+                    "GET",
+                    target,
+                    headers={
+                        "Host": f"[{host}]" if ":" in host else host,
+                        "Accept-Encoding": "identity",
+                    },
                     timeout=urllib3.Timeout(connect=min(10, remaining), read=remaining),
-                    retries=False, redirect=False, preload_content=False,
+                    retries=False,
+                    redirect=False,
+                    preload_content=False,
                 )
                 try:
                     if response.status in {301, 302, 303, 307, 308}:
@@ -90,7 +109,7 @@ def download_pdf(url: str, destination: Path, *, max_bytes: int, timeout: float,
                             if size > max_bytes or time.monotonic() > deadline:
                                 raise DownloadError()
                             if len(prefix) < 1024:
-                                prefix.extend(block[:1024 - len(prefix)])
+                                prefix.extend(block[: 1024 - len(prefix)])
                             output.write(block)
                     if b"%PDF-" not in prefix:
                         raise DownloadError()
